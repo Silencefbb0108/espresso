@@ -74,8 +74,8 @@ class LatticeFreeMMICriterion(FairseqCriterion):
             raise ImportError("Please install OpenFST and PyChain by `make openfst pychain` after entering espresso/tools")
 
         den_graphs = ChainGraphBatch(self.den_graph, sample["nsentences"])
-        encoder_out = net_output["encoder_out"][0].transpose(0, 1)  # T x B x V -> B x T x V
-        out_lengths =  net_output["encoder_out"][1].long()  # B
+        encoder_out = net_output.encoder_out.transpose(0, 1)  # T x B x V -> B x T x V
+        out_lengths = net_output.src_lengths.long()  # B
         den_objf = ChainFunction.apply(encoder_out, out_lengths, den_graphs, self.den_leaky_hmm_coefficient)
         num_objf = ChainFunction.apply(encoder_out, out_lengths, sample["target"], self.num_leaky_hmm_coefficient)
         loss = - num_objf + den_objf  # negative log-probs

@@ -18,6 +18,7 @@ from fairseq.models import (
     register_model,
     register_model_architecture,
 )
+from fairseq.models.fairseq_encoder import EncoderOut
 from fairseq.models.lstm import Linear
 
 from espresso.models.speech_lstm import ConvBNReLU, SpeechLSTMEncoder
@@ -120,7 +121,7 @@ class SpeechLSTMEncoderModel(FairseqEncoderModel):
  
     def get_normalized_probs(self, net_output, log_probs, sample=None):
         """Get normalized probabilities (or log probs) from a net's output."""
-        encoder_out = net_output["encoder_out"][0]
+        encoder_out = net_output.encoder_out
         if torch.is_tensor(encoder_out):
             logits = encoder_out.float()
             if log_probs:
@@ -180,8 +181,7 @@ class SpeechChunkLSTMEncoder(SpeechLSTMEncoder):
 
     def forward(self, src_tokens, src_lengths: Tensor, **unused):
         out = super().forward(src_tokens, src_lengths, **unused)
-        x, x_lengths = out["encoder_out"][0], out["encoder_out"][1]
-        encoder_padding_mask = out["encoder_padding_mask"]
+        x, encoder_padding_mask, x_lengths = out.encoder_out, out.encoder_padding_mask, out.src_lengths
 
         # determine which output frame to select for loss evaluation/test, assuming
         # all examples in a batch are of the same length for chunk-wise training/test
@@ -196,10 +196,14 @@ class SpeechChunkLSTMEncoder(SpeechLSTMEncoder):
         if self.fc_out is not None:
             x = self.fc_out(x)  # T x B x C -> T x B x V
 
-        return {
-            "encoder_out": (x, x_lengths),
-            "encoder_padding_mask": (encoder_padding_mask, torch.empty(0))
-        }
+        return EncoderOut(
+            encoder_out=x,  # T x B x C
+            encoder_padding_mask=encoder_padding_mask if encoder_padding_mask.any() else None,  # T x B
+            encoder_embedding=None,
+            encoder_states=None,
+            src_tokens=None,
+            src_lengths=x_lengths,  # B
+        )
 
 
 @register_model_architecture("speech_lstm_encoder_model", "speech_lstm_encoder_model")

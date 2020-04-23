@@ -20,6 +20,7 @@ from fairseq.models import (
     register_model,
     register_model_architecture,
 )
+from fairseq.models.fairseq_encoder import EncoderOut
 from fairseq.models.lstm import Linear
 
 import espresso.tools.utils as speech_utils
@@ -101,7 +102,7 @@ class SpeechTdnnEncoderModel(FairseqEncoderModel):
 
     def get_normalized_probs(self, net_output, log_probs, sample=None):
         """Get normalized probabilities (or log probs) from a net's output."""
-        encoder_out = net_output["encoder_out"][0]
+        encoder_out = net_output.encoder_out
         if torch.is_tensor(encoder_out):
             logits = encoder_out.float()
             if log_probs:
@@ -111,7 +112,7 @@ class SpeechTdnnEncoderModel(FairseqEncoderModel):
         raise NotImplementedError
 
     def get_logits(self, net_output):
-        logits = net_output["encoder_out"][0].transpose(0, 1).squeeze(2)  # 1 x B x 1 -> B x 1
+        logits = net_output.encoder_out.transpose(0, 1).squeeze(2)  # 1 x B x 1 -> B x 1
         return logits
 
     def update_state_prior(self, new_state_prior, factor=0.1):
@@ -238,10 +239,14 @@ class SpeechTdnnEncoder(FairseqEncoder):
             assert not encoder_padding_mask.any()
         x = self.output_layer(x)
 
-        return {
-            "encoder_out": (x, x_lengths),
-            "encoder_padding_mask": (encoder_padding_mask if encoder_padding_mask.any() else None, torch.empty(0))
-        }
+        return EncoderOut(
+            encoder_out=x,  # T x B x C
+            encoder_padding_mask=encoder_padding_mask if encoder_padding_mask.any() else None,  # T x B
+            encoder_embedding=None,
+            encoder_states=None,
+            src_tokens=None,
+            src_lengths=x_lengths,  # B
+        )
 
     def extract_features(self, src_tokens, src_lengths, **unused):
         x, x_lengths = src_tokens, src_lengths
@@ -264,17 +269,15 @@ class SpeechTdnnEncoder(FairseqEncoder):
         """Project features to the vocabulary size."""
         return self.fc_out(features)  # T x B x C -> T x B x V
 
-    def reorder_encoder_out(self, encoder_out, new_order):
-        encoder_out["encoder_out"] = (
-            encoder_out["encoder_out"][0].index_select(1, new_order),
-            encoder_out["encoder_out"][1].index_select(0, new_order),
+    def reorder_encoder_out(self, encoder_out: EncoderOut, new_order):
+        return EncoderOut(
+            encoder_out=encoder_out.encoder_out.index_select(1, new_order),
+            encoder_padding_mask=encoder_out.encoder_padding_mask.index_select(1, new_order) if encoder_out.encoder_padding_mask is not None else None,
+            encoder_embedding=None,
+            encoder_states=None,
+            src_tokens=None,
+            src_lengths=encoder_out.src_lengths.index_select(0, new_order),
         )
-        if encoder_out["encoder_padding_mask"][0] is not None:
-            encoder_out["encoder_padding_mask"] = (
-                encoder_out["encoder_padding_mask"][0].index_select(1, new_order),
-                encoder_out['encoder_padding_mask'][1],
-            )
-        return encoder_out
 
     def max_positions(self):
         """Maximum input length supported by the encoder."""
