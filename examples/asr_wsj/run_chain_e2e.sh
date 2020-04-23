@@ -18,6 +18,7 @@ whole_train_set=train_si284_sp  # will be split into train_set and valid_set
 train_set=train_si284_novalid_spe2e
 valid_set=train_si284_valid_spe2e
 test_set="test_dev93 test_eval92"
+dumpdir=data/dump   # directory to dump full features
 checkpoint=checkpoint_best.pt
 
 wsj0=
@@ -111,7 +112,28 @@ if [ ${stage} -le 2 ]; then
 fi
 
 if [ ${stage} -le 3 ]; then
-  echo "Stage 3: Make Graphs"
+  echo "Stage 3: Dump Feature"
+  for dataset in $train_set $valid_set $test_set; do
+    nj=8
+    utils/split_data.sh data/${dataset}_hires $nj
+    sdata=data/${dataset}_hires/split$nj
+    mkdir -p $dumpdir/${dataset}_hires; abs_featdir=`utils/make_absolute.sh $dumpdir/${dataset}_hires`
+    $train_cmd JOB=1:$nj $abs_featdir/log/dump_feature.JOB.log \
+      apply-cmvn --utt2spk=ark:$sdata/JOB/utt2spk scp:$sdata/JOB/cmvn.scp \
+        scp:$sdata/JOB/feats.scp ark:- \| \
+      copy-feats --compress=true --compression-method=2 ark:- \
+        ark,scp:$abs_featdir/feats.JOB.ark,$abs_featdir/feats.JOB.scp || exit 1
+    for n in $(seq $nj); do
+      cat $abs_featdir/feats.$n.scp || exit 1
+    done > $abs_featdir/feats.scp || exit 1
+    rm $abs_featdir/feats.*.scp 2>/dev/null
+    cat data/${dataset}_hires/utt2num_frames > $abs_featdir/utt2num_frames || exit 1
+    cat data/${dataset}_hires/utt2spk > $abs_featdir/utt2spk || exit 1
+  done
+fi
+
+if [ ${stage} -le 4 ]; then
+  echo "Stage 4: Make Graphs"
   for lmtype in tgpr bd_tgpr; do
     utils/lang/check_phones_compatible.sh \
       data/lang_nosp_test_$lmtype/phones.txt $lang/phones.txt
@@ -119,13 +141,13 @@ if [ ${stage} -le 3 ]; then
   done
 fi
 
-if [ ${stage} -le 4 ]; then
-  echo "Stage 4: Dump Json Files"
-  train_feat=data/${train_set}_hires/feats.scp
+if [ ${stage} -le 5 ]; then
+  echo "Stage 5: Dump Json Files"
+  train_feat=$dumpdir/${train_set}_hires/feats.scp
   train_fst=${tree_dir}/fst_novalid_nor.scp
   train_text=data/${train_set}_hires/text
   train_utt2num_frames=data/${train_set}_hires/utt2num_frames
-  valid_feat=data/${valid_set}_hires/feats.scp
+  valid_feat=$dumpdir/${valid_set}_hires/feats.scp
   valid_fst=${tree_dir}/fst_valid_nor.scp
   valid_text=data/${valid_set}_hires/text
   valid_utt2num_frames=data/${valid_set}_hires/utt2num_frames
@@ -136,7 +158,7 @@ if [ ${stage} -le 4 ]; then
     nj=$(wc -l <data/${dataset}_hires/spk2utt)
     utils/split_data.sh data/${dataset}_hires $nj
     for n in $(seq $nj); do
-      feat=data/${dataset}_hires/split$nj/$n/feats.scp
+      feat=$dumpdir/${dataset}_hires/split$nj/$n/feats.scp
       text=data/${dataset}_hires/split$nj/$n/text
       utt2num_frames=data/${dataset}_hires/split$nj/$n/utt2num_frames
       asr_prep_json.py --feat-files $feat --text-files $text --utt2num-frames-files $utt2num_frames --output data/chain_e2e/$dataset.$n.json
@@ -152,8 +174,8 @@ fi
 
 num_targets=$(tree-info ${tree_dir}/tree | grep num-pdfs | awk '{print $2}')
 
-if [ ${stage} -le 5 ]; then
-  echo "Stage 5: Model Training"
+if [ ${stage} -le 6 ]; then
+  echo "Stage 6: Model Training"
   valid_subset=valid
   mkdir -p $dir/log
   log_file=$dir/log/train.log
@@ -162,7 +184,7 @@ if [ ${stage} -le 5 ]; then
     --log-interval $((200/ngpus)) --log-format simple --num-workers 0 --max-tokens 120000 --max-sentences 128 \
     --curriculum 1 --valid-subset $valid_subset --max-sentences-valid 128 --ddp-backend no_c10d \
     --distributed-world-size $ngpus --distributed-port $(if [ $ngpus -gt 1 ]; then echo 100; else echo -1; fi) \
-    --max-epoch 25 --optimizer adam --lr 0.001 --weight-decay 0.0 --start-reduce-lr-epoch 11 \
+    --max-epoch 30 --optimizer adam --lr 0.001 --weight-decay 0.01 --start-reduce-lr-epoch 11 \
     --lr-scheduler reduce_lr_on_plateau_v2 --lr-shrink 0.5 \
     --save-dir $dir --restore-file checkpoint_last.pt --save-interval-updates $((400/ngpus)) \
     --keep-interval-updates 5 --keep-last-epochs 5 --validate-interval 1 \
@@ -173,8 +195,8 @@ if [ ${stage} -le 5 ]; then
     --max-source-positions 9999 --max-target-positions 9999 2>&1 | tee $log_file
 fi
 
-if [ ${stage} -le 6 ]; then
-  echo "Stage 6: Decoding"
+if [ ${stage} -le 7 ]; then
+  echo "Stage 7: Decoding"
   rm $dir/.error 2>/dev/null || true
   queue_opt="--num-threads 4"
   path=$dir/$checkpoint
